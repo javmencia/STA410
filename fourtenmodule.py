@@ -13,7 +13,11 @@ from sklearn.model_selection import KFold
 
 
 # Bayesian Linear Regression Model
-def bayesian_regression_mcmc(X, y, true_beta  = None):
+def bayesian_regression_mcmc(X, y, true_beta  = None, draws  =4000):
+    if draws < 4000:
+        tune = draws
+    else:
+        tune = 1000
     if true_beta is None:
         true_beta = np.zeros(X.shape[1])
     with pm.Model() as model:
@@ -26,13 +30,17 @@ def bayesian_regression_mcmc(X, y, true_beta  = None):
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y)
 
         # Sample from the posterior using MCMC
-        trace = pm.sample(4000, return_inferencedata=True,
+        trace = pm.sample(draws  =draws, tune = tune, return_inferencedata=True, 
                           idata_kwargs={"log_likelihood": True})  # Ensure log likelihood is stored
 
     return model, trace
 
 # Bayesian Ridge Regression Model
-def bayesian_ridge_regression(X, y, true_beta  = None):
+def bayesian_ridge_regression(X, y, true_beta  = None, draws = 4000):
+    if draws < 4000:
+        tune = draws
+    else:
+        tune = 1000
     if true_beta is None:
         true_beta = np.zeros(X.shape[1])
     with pm.Model() as model:
@@ -50,15 +58,22 @@ def bayesian_ridge_regression(X, y, true_beta  = None):
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y)
 
         # Sample from the posterior using MCMC
-        trace = pm.sample(4000, return_inferencedata=True,
+        trace = pm.sample(draws = draws, tune = tune, return_inferencedata=True,
                           idata_kwargs={"log_likelihood": True})
     return model, trace
 
-def bayesian_lasso(X, y, true_beta=None, n_folds=5):
+def bayesian_lasso(X, y, true_beta=None, n_folds=5, draws  =4000):
     """Bayesian Lasso regression with cross-validated lambda selection"""
+    if draws < 4000:
+        tune = draws
+    else:
+        tune = 1000
+
     if true_beta is None:
         true_beta = np.zeros(X.shape[1])
     
+    n_folds = min(n_folds, len(y))
+
     # First perform cross-validation to find optimal alpha (lambda)
     lasso_cv = LassoCV(cv=KFold(n_folds), random_state=42)
     lasso_cv.fit(X, y)
@@ -75,14 +90,18 @@ def bayesian_lasso(X, y, true_beta=None, n_folds=5):
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y)
 
         # Sample from posterior
-        trace = pm.sample(4000, return_inferencedata=True,
+        trace = pm.sample(draws = draws, tune = tune, return_inferencedata=True,
                          idata_kwargs={"log_likelihood": True})
     
     return model, trace
 
 
 # Bayesian Robust Regression Model
-def bayesian_robust_regression(X, y, true_beta  = None):
+def bayesian_robust_regression(X, y, true_beta  = None, draws =4000):
+    if draws < 4000:
+        tune = draws
+    else:
+        tune = 1000
     if true_beta is None:
         true_beta = np.zeros(X.shape[1])
     with pm.Model() as model:
@@ -93,7 +112,7 @@ def bayesian_robust_regression(X, y, true_beta  = None):
         mu = pm.math.dot(X, beta)
         y_obs = pm.StudentT("y_obs", nu=nu, mu=mu, sigma=sigma, observed=y)
 
-        trace = pm.sample(4000, return_inferencedata=True,
+        trace = pm.sample(draws = draws, tune = tune, return_inferencedata=True,
                           idata_kwargs={"log_likelihood": True})
 
     return model, trace
@@ -109,7 +128,11 @@ def bayesian_regression_vi(X, y, true_beta = None):
         approx = pm.fit(n=10000, method="advi")  # Automatic Differentiation Variational Inference (ADVI)
     return model, approx.sample(1000)
 
-def bayesian_pcr(X, y, true_beta=None, n_components=None):
+def bayesian_pcr(X, y, true_beta=None, n_components=None, draws=  4000):
+    if draws < 4000:
+        tune = draws
+    else:
+        tune = 1000
     if true_beta is None:
         true_beta = np.zeros(X.shape[1])
     
@@ -127,12 +150,16 @@ def bayesian_pcr(X, y, true_beta=None, n_components=None):
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y)
 
         # Sample from the posterior
-        trace = pm.sample(4000, return_inferencedata=True, idata_kwargs={"log_likelihood": True})
+        trace = pm.sample(draws = draws, tune = tune, return_inferencedata=True, idata_kwargs={"log_likelihood": True})
 
     return model, trace, pca  # Return PCA object for inverse transformation
 
 
-def bayesian_icr(X, y, true_beta=None, n_components=None):
+def bayesian_icr(X, y, true_beta=None, n_components=None, draws = 4000):
+    if draws < 4000:
+        tune = draws
+    else:
+        tune = 1000
     if true_beta is None:
         true_beta = np.zeros(X.shape[1])
     
@@ -152,7 +179,7 @@ def bayesian_icr(X, y, true_beta=None, n_components=None):
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y)
 
         # Sample from the posterior
-        trace = pm.sample(4000, return_inferencedata=True, 
+        trace = pm.sample(draws  =draws, tune = tune, return_inferencedata=True, 
                          idata_kwargs={"log_likelihood": True})
 
     return model, trace, ica
@@ -411,6 +438,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import traceback
 import sys
 
+
 def run_model_safely(model_func, args, kwargs):
     """Wrapper to run model and capture output safely"""
     old_stdout = sys.stdout
@@ -424,21 +452,25 @@ def run_model_safely(model_func, args, kwargs):
     finally:
         sys.stdout = old_stdout
 
-def run_and_plot_models(X, y, true_beta=None, n_components=2, time_limit=30):
-    """
-    Run Bayesian models with proper timeout functionality and plot results
-    
-    Args:
-        X: Input features
-        y: Target variable
-        true_beta: True coefficients (optional)
-        n_components: Number of components for PCR/ICR
-        time_limit: Maximum seconds allowed per model
-        
-    Returns:
-        Dictionary containing results and metrics
-    """
-    models = {
+# Generate test data
+np.random.seed(410)
+n = 50
+p = 5
+X = np.ones((n, p))
+for i in range(0, X.shape[1], 2):
+    X[i::2, i] = 0
+    X[i+1::2, i] = 1
+
+true_beta = np.logspace(0, 1, p, base=2)
+sigma_true = 1
+y = np.dot(X, true_beta) + stats.norm(0, sigma_true).rvs(n)
+
+
+
+
+def run_model_tests(X, y, true_beta=None, n_components=2, max_test_time=5):
+    """Run timing tests and return passing models"""
+    all_models = {
         "Bayesian Linear Regression": bayesian_regression_mcmc,
         "Bayesian Ridge Regression": bayesian_ridge_regression,
         "Bayesian Lasso": bayesian_lasso,
@@ -448,71 +480,127 @@ def run_and_plot_models(X, y, true_beta=None, n_components=2, time_limit=30):
         "Bayesian ICR": bayesian_icr,
     }
     
-    evaluation_mode = true_beta is not None
-    num_betas = len(true_beta) if evaluation_mode else X.shape[1]
+    print(f"\n=== Running timing tests (max {max_test_time}s per model) ===")
+    passing_models = {}
+    failing_models = {}
     
-    results = []
-    model_traces = {}
-    model_metrics = {}
-    model_extras = {}
-    skipped_models = []
-    
-    if evaluation_mode:
-        active_models = [name for name in models if "PCR" not in name and "ICR" not in name]
-        fig, axes = plt.subplots(num_betas, len(active_models), 
-                               figsize=(18, 3 * num_betas),
-                               sharex=True, sharey=True)
-        axes = axes.reshape(num_betas, len(active_models))
-    
-    # Run models one at a time with timeout
-    for col, (model_name, model_func) in enumerate(models.items()):
-        print(f"\nRunning {model_name}...")
-        start_time = time.time()
+    for model_name, model_func in all_models.items():
+        print(f"\nTesting {model_name}...")
         
         # Prepare arguments
         if model_name in ["Bayesian PCR", "Bayesian ICR"]:
-            args = (X, y, true_beta, n_components) if evaluation_mode else (X, y)
-            kwargs = {'n_components': n_components} if not evaluation_mode else {}
-        else:
-            args = (X, y, true_beta) if evaluation_mode else (X, y)
+            args = (X, y, true_beta, n_components) if true_beta is not None else (X, y)
+            kwargs = {'n_components': n_components, 'draws': 25} if true_beta is None else {'draws': 25}
+        elif model_name == "Bayesian Variational Inference":
+            args = (X, y, true_beta) if true_beta is not None else (X, y)
             kwargs = {}
+        else:
+            args = (X, y, true_beta) if true_beta is not None else (X, y)
+            kwargs = {'draws': 25}
         
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_model_safely, model_func, args, kwargs)
-                result = future.result(timeout=time_limit)
+            start_time = time.time()
+            result = model_func(*args, **kwargs)
+            duration = time.time() - start_time
+            
+            if duration > max_test_time:
+                failing_models[model_name] = f"Too slow ({duration:.2f}s > {max_test_time}s)"
+                print(f"  → Failed: took {duration:.2f}s (timeout)")
+            else:
+                passing_models[model_name] = model_func
+                print(f"  → Passed in {duration:.2f}s")
                 
-                # Process successful result
-                if model_name in ["Bayesian PCR", "Bayesian ICR"]:
-                    model, trace, transformer = result
-                    model_extras[model_name] = transformer
-                else:
-                    model, trace = result
-                    transformer = None
-
-                rmse, beta_estimates = compute_metrics(trace, X, y, transformer)
-                
-                results.append([model_name] + list(beta_estimates) + [rmse])
-                model_traces[model_name] = trace
-                model_metrics[model_name] = rmse
-                
-                if evaluation_mode and model_name not in ["Bayesian PCR", "Bayesian ICR"]:
-                    try:
-                        beta_key = [key for key in trace.posterior.keys() if "beta" in key][0]
-                        for i in range(num_betas):
-                            az.plot_posterior(trace.posterior[beta_key].sel(beta_dim_0=i),
-                                             hdi_prob=0.95, ax=axes[i, col])
-                            axes[i, col].set_title(f"{model_name} - Beta[{i}]")
-                    except Exception as e:
-                        print(f"Could not plot {model_name}: {str(e)}")
-                        
-                print(f"Completed {model_name} in {time.time()-start_time:.2f}s")
-                
-        except TimeoutError:
-            print(f"Skipping {model_name} - exceeded time limit of {time_limit}s")
-            skipped_models.append(model_name)
         except Exception as e:
-            print(f"Skipping {model_name} - encountered error:\n{traceback.format_exc()}")
-            skipped_models.append(model_name)
+            failing_models[model_name] = str(e)
+            print(f"  → Failed: {str(e)}")
     
-   
+    # Show which models were filtered out
+    if failing_models:
+        print("\n=== Models that didn't pass timing tests ===")
+        for name, reason in failing_models.items():
+            print(f"{name}: {reason}")
+    
+    return passing_models
+
+def run_and_plot_models(X, y, true_beta=None, n_components=2, max_test_time=5):
+    """
+    Complete workflow:
+    1. Run timing tests to filter models
+    2. Run full analysis on passing models
+    3. Return comprehensive results
+    """
+    # Step 1: Get passing models
+    passing_models = run_model_tests(X, y, true_beta, n_components, max_test_time)
+    
+    # Step 2: Run full analysis
+    print("\n=== Running full analysis on passing models ===")
+    results = []
+    model_traces = {}
+    transformers = {}
+    
+    for model_name, model_func in passing_models.items():
+        print(f"\nRunning {model_name}...")
+        
+        # Prepare arguments for full run
+        if model_name in ["Bayesian PCR", "Bayesian ICR"]:
+            args = (X, y, true_beta, n_components) if true_beta is not None else (X, y)
+            kwargs = {'n_components': n_components, 'draws': 4000} if true_beta is None else {'draws': 4000}
+        elif model_name == "Bayesian Variational Inference":
+            args = (X, y, true_beta) if true_beta is not None else (X, y)
+            kwargs = {}
+        else:
+            args = (X, y, true_beta) if true_beta is not None else (X, y)
+            kwargs = {'draws': 4000}
+        
+        try:
+            result = model_func(*args, **kwargs)
+            
+            # Process results
+            if model_name in ["Bayesian PCR", "Bayesian ICR"]:
+                model, trace, transformer = result
+                transformers[model_name] = transformer
+            else:
+                model, trace = result
+            
+            # Compute metrics
+            rmse, beta_estimates = compute_metrics(trace, X, y, transformer if model_name in ["Bayesian PCR", "Bayesian ICR"] else None)
+            
+            results.append({
+                'Model': model_name,
+                'RMSE': rmse,
+                'Beta Estimates': beta_estimates
+            })
+            model_traces[model_name] = trace
+            
+            print(f"Completed {model_name} successfully")
+            
+        except Exception as e:
+            print(f"Failed to run {model_name}: {str(e)}")
+            results.append({
+                'Model': model_name,
+                'RMSE': np.nan,
+                'Beta Estimates': [np.nan] * X.shape[1],
+                'Error': str(e)
+            })
+    
+    # Step 3: Show final results
+    print("\n=== Final Results (only passing models) ===")
+    print("\n{:<30} {:<10} {}".format('Model', 'RMSE', 'Beta Estimates'))
+    print("-" * 70)
+    for res in sorted(results, key=lambda x: x['RMSE'] if not np.isnan(x['RMSE']) else float('inf')):
+        beta_str = "  ".join([f"β{i}:{val:.3f}" for i, val in enumerate(res['Beta Estimates'])])
+        print("{:<30} {:<10.4f} {}".format(
+            res['Model'],
+            res['RMSE'] if not np.isnan(res['RMSE']) else -1,
+            beta_str
+        ))
+    
+    return {
+        'passing_models': passing_models,
+        'results': results,
+        'traces': model_traces,
+        'transformers': transformers
+    }
+
+# Example usage:
+#results = run_and_plot_models(X, y, true_beta=true_beta, n_components=2)
