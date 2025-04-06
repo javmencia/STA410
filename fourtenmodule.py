@@ -8,6 +8,9 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 from sklearn.decomposition import FastICA
 from scipy import stats
+from sklearn.linear_model import LassoCV
+from sklearn.model_selection import KFold
+
 
 # Bayesian Linear Regression Model
 def bayesian_regression_mcmc(X, y, true_beta  = None):
@@ -49,6 +52,32 @@ def bayesian_ridge_regression(X, y, true_beta  = None):
         # Sample from the posterior using MCMC
         trace = pm.sample(4000, return_inferencedata=True,
                           idata_kwargs={"log_likelihood": True})
+    return model, trace
+
+def bayesian_lasso(X, y, true_beta=None, n_folds=5):
+    """Bayesian Lasso regression with cross-validated lambda selection"""
+    if true_beta is None:
+        true_beta = np.zeros(X.shape[1])
+    
+    # First perform cross-validation to find optimal alpha (lambda)
+    lasso_cv = LassoCV(cv=KFold(n_folds), random_state=42)
+    lasso_cv.fit(X, y)
+    optimal_alpha = lasso_cv.alpha_
+    
+    with pm.Model() as model:
+        # Lasso (Laplace) prior - equivalent to L1 regularization
+        # Scale parameter is 1/optimal_alpha from CV
+        beta = pm.Laplace("beta", mu=true_beta, b=1/optimal_alpha, shape=X.shape[1])
+        sigma = pm.HalfCauchy("sigma", beta=2)
+
+        # Likelihood
+        mu = pm.math.dot(X, beta)
+        y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y)
+
+        # Sample from posterior
+        trace = pm.sample(4000, return_inferencedata=True,
+                         idata_kwargs={"log_likelihood": True})
+    
     return model, trace
 
 
@@ -147,10 +176,11 @@ def run_and_plot_models(X, y, true_beta=None, n_components=2):
     models = {
         "Bayesian Linear Regression": bayesian_regression_mcmc,
         "Bayesian Ridge Regression": bayesian_ridge_regression,
+        "Bayesian Lasso": bayesian_lasso,
         "Bayesian Robust Regression": bayesian_robust_regression,
         "Bayesian Variational Inference": bayesian_regression_vi,
         "Bayesian PCR": bayesian_pcr,
-        "Bayesian ICR": bayesian_icr
+        "Bayesian ICR": bayesian_icr,
     }
     
     evaluation_mode = true_beta is not None
@@ -159,6 +189,7 @@ def run_and_plot_models(X, y, true_beta=None, n_components=2):
     results = []
     model_traces = {}  # Store traces for all models
     model_metrics = {}  # Store metrics for all models
+    model_extras = {}   # Store any extra return values from models
     
     if evaluation_mode:
         fig, axes = plt.subplots(num_betas, len(models) - 2, figsize=(18, 3 * num_betas),
@@ -172,6 +203,10 @@ def run_and_plot_models(X, y, true_beta=None, n_components=2):
                 model, trace, transformer = model_func(X, y, true_beta, n_components)
             else:
                 model, trace, transformer = model_func(X, y, n_components=n_components)
+            model_extras[model_name] = transformer
+        elif model_name == "Bayesian Lasso":
+            model, trace = model_func(X, y, true_beta) if evaluation_mode else model_func(X, y)
+            transformer = None
         else:
             model, trace = model_func(X, y, true_beta) if evaluation_mode else model_func(X, y)
             transformer = None
@@ -226,7 +261,8 @@ def run_and_plot_models(X, y, true_beta=None, n_components=2):
         'best_trace': best_model_trace,
         'all_results': results_df,
         'all_metrics': model_metrics,
-        'all_traces': model_traces
+        'all_traces': model_traces,
+        'extras': model_extras
     }
 
 def evaluate_model_performance(estimated_beta, true_beta):
@@ -237,58 +273,138 @@ def evaluate_model_performance(estimated_beta, true_beta):
         estimated_beta = padded_estimated
     return np.sqrt(np.mean((true_beta - estimated_beta) ** 2))  # RMSE
 
-def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2):
+def create_rmse_table(rmse_results, p_numbers):
+    """
+    Creates and displays a styled DataFrame showing RMSE values for each model at different predictor levels.
+    
+    Args:
+        rmse_results (dict): Dictionary containing RMSE values for each model
+        p_numbers (list): List of predictor counts tested
+        
+    Returns:
+        pd.DataFrame: Styled DataFrame with RMSE results
+    """
+    # Create DataFrame from results
+    results_df = pd.DataFrame(rmse_results, index=p_numbers)
+    results_df.index.name = "Number of Predictors (p)"
+    results_df.columns.name = "Model"
+    
+    # Apply styling
+    styled_df = results_df.style\
+        .format("{:.4f}")\
+        .set_caption("RMSE Comparison Across Models and Predictor Counts")\
+        .background_gradient(cmap='viridis', subset=pd.IndexSlice[:, :])\
+        .highlight_min(axis=1, color='yellow')
+    
+    return styled_df
+
+def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr=False):
+    """
+    Main function to run all models and evaluate performance
+    
+    Args:
+        n (int): Number of samples
+        p (int): Number of predictors
+        true_beta (array): True coefficients (if None, will generate)
+        n_components (int): Number of components for PCR/ICR
+        high_corr (bool): Whether to generate high-correlation data
+        
+    Returns:
+        tuple: RMSE values for all models
+    """
     if true_beta is None:
-        if p is None:
-            raise ValueError("Either true_beta or p must be provided.")
         true_beta = np.logspace(0, 1, p, base=2)  # Generate true_beta based on p
 
     p = len(true_beta)
     sigma_true = 1
 
-    # Generate data
-    X = np.ones((n, p))
-    for i in range(0, X.shape[1], 2):
-        X[i::2, i] = 0
-        X[i+1::2, i] = 1
+    if not high_corr:
+        # Generate simple alternating pattern data
+        X = np.ones((n, p))
+        for i in range(0, X.shape[1], 2):
+            X[i::2, i] = 0
+            X[i+1::2, i] = 1
+        y = np.dot(X, true_beta) + stats.norm(0, sigma_true).rvs(n)
+    else:
+        X, y, true_beta = generate_high_dim_data(n=n, p=p)
 
-    y = np.dot(X, true_beta) + stats.norm(0, sigma_true).rvs(n)
-
-    # Run models
+    # Run all models
     _, trace_mcmc = bayesian_regression_mcmc(X, y, true_beta)
     _, trace_ridge = bayesian_ridge_regression(X, y, true_beta)
+    _, trace_lasso = bayesian_lasso(X, y, true_beta)
     _, trace_robust = bayesian_robust_regression(X, y, true_beta)
     _, trace_vi = bayesian_regression_vi(X, y, true_beta)
     
     # Dimensionality reduction models
-    pca = PCA(n_components=n_components)
+    pca = PCA(n_components=min(n_components, p))
     X_pca = pca.fit_transform(X)
     _, trace_pcr, _ = bayesian_pcr(X_pca, y, true_beta, n_components)
     
-    ica = FastICA(n_components=n_components, random_state=42)
+    ica = FastICA(n_components=min(n_components, p), random_state=42)
     X_ica = ica.fit_transform(X)
     _, trace_icr, _ = bayesian_icr(X_ica, y, true_beta, n_components)
 
-    # Extract posterior means
-    beta_mcmc = trace_mcmc.posterior['beta'].mean(dim=('chain', 'draw')).values
-    beta_ridge = trace_ridge.posterior['beta'].mean(dim=('chain', 'draw')).values
-    beta_robust = trace_robust.posterior['beta'].mean(dim=('chain', 'draw')).values
-    beta_vi = trace_vi.posterior['beta'].mean(dim=('chain', 'draw')).values
+    # Extract and evaluate all results
+    rmse_values = []
+    for trace, transformer in zip(
+        [trace_mcmc, trace_ridge, trace_lasso, trace_robust, trace_vi, trace_pcr, trace_icr],
+        [None, None, None, None, None, pca, ica]
+    ):
+        beta = trace.posterior['beta'].mean(dim=('chain', 'draw')).values
+        if transformer is not None:
+            beta = transformer.components_.T @ beta
+        rmse_values.append(evaluate_model_performance(beta, true_beta))
     
-    # For PCR/ICR, get coefficients in reduced space and transform back
-    beta_pcr = trace_pcr.posterior['beta'].mean(dim=('chain', 'draw')).values
-    beta_pcr_original = pca.components_.T @ beta_pcr
+    return tuple(rmse_values)
+
+# Main execution
+if __name__ == "__main__":
+    p_numbers = [5, 20, 30, 60, 100]
+    n = 20
+    rmse_results = {"MCMC": [], "Ridge": [], "Lasso": [], "Robust": [], "VI": [], "PCR": [], "ICR": []}
+
+    for p in p_numbers:
+        print(f"Running models for p={p}")
+        rmse_values = run_models_and_evaluate(n=n, p=p, high_corr=True)
+        for model, rmse in zip(rmse_results.keys(), rmse_values):
+            rmse_results[model].append(rmse)
+
+    # Create and display table
+    rmse_table = create_rmse_table(rmse_results, p_numbers)
+    display(rmse_table)
+
+    # Plot results
+    plt.figure(figsize=(10, 6))
+    for model, values in rmse_results.items():
+        plt.plot(p_numbers, values, marker='o', label=model)
+    plt.xlabel("Number of Features (p)")
+    plt.ylabel("RMSE (vs. True Coefficients)")
+    plt.title("Model Performance as Dimensionality Increases")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+def generate_high_dim_data(n=50, p=100, true_signal_indices=None, true_beta_values=[3.0, -2.0, 4.0], noise_level=1.0):
+    """Generate high-dimensional data with sparse true signals."""
+    if true_signal_indices is None:
+        # Dynamically place signals at 25%, 50%, 75% of p (but ensure they're within bounds)
+        true_signal_indices = [int(p * 0.25), int(p * 0.5), int(p * 0.75)]
+        true_signal_indices = [min(idx, p-1) for idx in true_signal_indices]  # Ensure no out-of-bounds
     
-    beta_icr = trace_icr.posterior['beta'].mean(dim=('chain', 'draw')).values
-    beta_icr_original = ica.components_.T @ beta_icr
+    true_beta = np.zeros(p)
+    true_beta[true_signal_indices] = true_beta_values  # Only a few true signals
 
-    # Compute RMSE - now with dimension handling
-    rmse_mcmc = evaluate_model_performance(beta_mcmc, true_beta)
-    rmse_ridge = evaluate_model_performance(beta_ridge, true_beta)
-    rmse_robust = evaluate_model_performance(beta_robust, true_beta)
-    rmse_vi = evaluate_model_performance(beta_vi, true_beta)
-    rmse_pcr = evaluate_model_performance(beta_pcr_original, true_beta)
-    rmse_icr = evaluate_model_performance(beta_icr_original, true_beta)
+    # Generate X with a few latent factors + noise
+    latent_dim = len(true_signal_indices)
+    latent_factors = np.random.randn(n, latent_dim)  # Latent factors driving y
+    X = np.hstack([
+        latent_factors[:, 0:1] * np.random.randn(n, p // 3),  # Group 1: Correlated with factor 1
+        latent_factors[:, 1:2] * np.random.randn(n, p // 3),  # Group 2: Correlated with factor 2
+        latent_factors[:, 2:3] * np.random.randn(n, p // 3),  # Group 3: Correlated with factor 3
+        np.random.randn(n, p - 3 * (p // 3))  # Pure noise
+    ])
 
-    return rmse_mcmc, rmse_ridge, rmse_robust, rmse_vi, rmse_pcr, rmse_icr
+    # y depends only on the latent factors
+    y = np.dot(latent_factors, true_beta_values) + stats.norm(0, noise_level).rvs(n)
+    return X, y, true_beta
 
