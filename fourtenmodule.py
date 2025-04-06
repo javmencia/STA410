@@ -158,7 +158,6 @@ def bayesian_icr(X, y, true_beta=None, n_components=None):
     return model, trace, ica
 
 
-
 def compute_metrics(trace, X, y, transformer=None):
     beta_key = [key for key in trace.posterior.keys() if "beta" in key][0]
     beta_samples = trace.posterior[beta_key].mean(dim=["chain", "draw"]).values
@@ -172,98 +171,6 @@ def compute_metrics(trace, X, y, transformer=None):
     
     return rmse, beta_samples
 
-def run_and_plot_models(X, y, true_beta=None, n_components=2):
-    models = {
-        "Bayesian Linear Regression": bayesian_regression_mcmc,
-        "Bayesian Ridge Regression": bayesian_ridge_regression,
-        "Bayesian Lasso": bayesian_lasso,
-        "Bayesian Robust Regression": bayesian_robust_regression,
-        "Bayesian Variational Inference": bayesian_regression_vi,
-        "Bayesian PCR": bayesian_pcr,
-        "Bayesian ICR": bayesian_icr,
-    }
-    
-    evaluation_mode = true_beta is not None
-    num_betas = len(true_beta) if evaluation_mode else X.shape[1]
-    
-    results = []
-    model_traces = {}  # Store traces for all models
-    model_metrics = {}  # Store metrics for all models
-    model_extras = {}   # Store any extra return values from models
-    
-    if evaluation_mode:
-        fig, axes = plt.subplots(num_betas, len(models) - 2, figsize=(18, 3 * num_betas),
-                               sharex=True, sharey=True)
-    
-    for col, (model_name, model_func) in enumerate(models.items()):
-        print(f"Running {model_name}...")
-        
-        if model_name in ["Bayesian PCR", "Bayesian ICR"]:
-            if evaluation_mode:
-                model, trace, transformer = model_func(X, y, true_beta, n_components)
-            else:
-                model, trace, transformer = model_func(X, y, n_components=n_components)
-            model_extras[model_name] = transformer
-        elif model_name == "Bayesian Lasso":
-            model, trace = model_func(X, y, true_beta) if evaluation_mode else model_func(X, y)
-            transformer = None
-        else:
-            model, trace = model_func(X, y, true_beta) if evaluation_mode else model_func(X, y)
-            transformer = None
-
-        rmse, beta_estimates = compute_metrics(trace, X, y, 
-                                             transformer if model_name in ["Bayesian PCR", "Bayesian ICR"] else None)
-
-        results.append([model_name] + list(beta_estimates) + [rmse])
-        model_traces[model_name] = trace
-        model_metrics[model_name] = rmse
-        
-        if evaluation_mode and model_name not in ["Bayesian PCR", "Bayesian ICR"]:
-            beta_key = [key for key in trace.posterior.keys() if "beta" in key][0]
-            for i in range(num_betas):
-                az.plot_posterior(trace.posterior[beta_key].sel(beta_dim_0=i),
-                                 hdi_prob=0.95, ax=axes[i, col])
-                axes[i, col].set_title(f"{model_name} - Beta[{i}]")
-    
-    if evaluation_mode:
-        plt.suptitle("Posterior Distributions (Excluding Dimensionality Reduction Models)", fontsize=16)
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.9)
-        plt.show()
-
-        # Show components info
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-        ax1.text(0.5, 0.5, f"PCR Components: {n_components}", fontsize=14, ha='center', va='center')
-        ax2.text(0.5, 0.5, f"ICR Components: {n_components}", fontsize=14, ha='center', va='center')
-        for ax in [ax1, ax2]:
-            ax.set_xticks([])
-            ax.set_yticks([])
-        plt.show()
-    
-    # Create results table
-    metric_name = "RMSE" if evaluation_mode else "MSE"
-    columns = ["Model"] + [f"Beta[{i}]" for i in range(num_betas)] + [metric_name]
-    results_df = pd.DataFrame(results, columns=columns)
-    
-    print("\nModel Performance Summary:")
-    print(results_df)
-    
-    # Find the model with the lowest error
-    best_model_name = min(model_metrics.items(), key=lambda x: x[1])[0]
-    best_model_metric = model_metrics[best_model_name]
-    best_model_trace = model_traces[best_model_name]
-    
-    print(f"\nBest model: {best_model_name} with {metric_name}: {best_model_metric:.4f}")
-    
-    return {
-        'best_model': best_model_name,
-        'best_metric': best_model_metric,
-        'best_trace': best_model_trace,
-        'all_results': results_df,
-        'all_metrics': model_metrics,
-        'all_traces': model_traces,
-        'extras': model_extras
-    }
 
 def evaluate_model_performance(estimated_beta, true_beta):
     # Ensure both arrays have same length by padding estimated_beta with zeros if needed
@@ -273,33 +180,10 @@ def evaluate_model_performance(estimated_beta, true_beta):
         estimated_beta = padded_estimated
     return np.sqrt(np.mean((true_beta - estimated_beta) ** 2))  # RMSE
 
-def create_rmse_table(rmse_results, p_numbers):
-    """
-    Creates and displays a styled DataFrame showing RMSE values for each model at different predictor levels.
-    
-    Args:
-        rmse_results (dict): Dictionary containing RMSE values for each model
-        p_numbers (list): List of predictor counts tested
-        
-    Returns:
-        pd.DataFrame: Styled DataFrame with RMSE results
-    """
-    # Create DataFrame from results
-    results_df = pd.DataFrame(rmse_results, index=p_numbers)
-    results_df.index.name = "Number of Predictors (p)"
-    results_df.columns.name = "Model"
-    
-    # Apply styling
-    styled_df = results_df.style\
-        .format("{:.4f}")\
-        .set_caption("RMSE Comparison Across Models and Predictor Counts")\
-        .background_gradient(cmap='viridis', subset=pd.IndexSlice[:, :])\
-        .highlight_min(axis=1, color='yellow')
-    
-    return styled_df
 
-def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr=False):
-    """
+
+"""def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr=False):
+    #
     Main function to run all models and evaluate performance
     
     Args:
@@ -311,7 +195,7 @@ def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr
         
     Returns:
         tuple: RMSE values for all models
-    """
+    #
     if true_beta is None:
         true_beta = np.logspace(0, 1, p, base=2)  # Generate true_beta based on p
 
@@ -357,32 +241,7 @@ def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr
     
     return tuple(rmse_values)
 
-# Main execution
-if __name__ == "__main__":
-    p_numbers = [5, 20, 30, 60, 100]
-    n = 20
-    rmse_results = {"MCMC": [], "Ridge": [], "Lasso": [], "Robust": [], "VI": [], "PCR": [], "ICR": []}
-
-    for p in p_numbers:
-        print(f"Running models for p={p}")
-        rmse_values = run_models_and_evaluate(n=n, p=p, high_corr=True)
-        for model, rmse in zip(rmse_results.keys(), rmse_values):
-            rmse_results[model].append(rmse)
-
-    # Create and display table
-    rmse_table = create_rmse_table(rmse_results, p_numbers)
-    display(rmse_table)
-
-    # Plot results
-    plt.figure(figsize=(10, 6))
-    for model, values in rmse_results.items():
-        plt.plot(p_numbers, values, marker='o', label=model)
-    plt.xlabel("Number of Features (p)")
-    plt.ylabel("RMSE (vs. True Coefficients)")
-    plt.title("Model Performance as Dimensionality Increases")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+"""
 
 def generate_high_dim_data(n=50, p=100, true_signal_indices=None, true_beta_values=[3.0, -2.0, 4.0], noise_level=1.0):
     """Generate high-dimensional data with sparse true signals."""
@@ -408,3 +267,252 @@ def generate_high_dim_data(n=50, p=100, true_signal_indices=None, true_beta_valu
     y = np.dot(latent_factors, true_beta_values) + stats.norm(0, noise_level).rvs(n)
     return X, y, true_beta
 
+import time
+from functools import wraps
+
+def time_limited(limit=30):
+    """Decorator to skip function if it runs longer than limit seconds."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            result = None
+            exception = None
+            
+            try:
+                result = func(*args, **kwargs)
+            except Exception as e:
+                exception = e
+            
+            elapsed = time.time() - start_time
+            if elapsed > limit:
+                print(f"Skipping {func.__name__} - exceeded time limit of {limit}s (took {elapsed:.2f}s)")
+                return None
+            elif exception is not None:
+                print(f"Skipping {func.__name__} - encountered error: {str(exception)}")
+                return None
+            
+            return result
+        return wrapper
+    return decorator
+
+def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr=False, time_limit=30):
+    """
+    Main function to run all models and evaluate performance with time limits
+    
+    Args:
+        n (int): Number of samples
+        p (int): Number of predictors
+        true_beta (array): True coefficients (if None, will generate)
+        n_components (int): Number of components for PCR/ICR
+        high_corr (bool): Whether to generate high-correlation data
+        time_limit (int): Maximum seconds allowed per model
+        
+    Returns:
+        tuple: RMSE values for all models (None for skipped models)
+    """
+    if true_beta is None:
+        true_beta = np.logspace(0, 1, p, base=2)
+
+    p = len(true_beta)
+    sigma_true = 1
+
+    if not high_corr:
+        X = np.ones((n, p))
+        for i in range(0, X.shape[1], 2):
+            X[i::2, i] = 0
+            X[i+1::2, i] = 1
+        y = np.dot(X, true_beta) + stats.norm(0, sigma_true).rvs(n)
+    else:
+        X, y, true_beta = generate_high_dim_data(n=n, p=p)
+
+    # Time-limited versions of model functions
+    @time_limited(time_limit)
+    def run_mcmc(): return bayesian_regression_mcmc(X, y, true_beta)
+    
+    @time_limited(time_limit)
+    def run_ridge(): return bayesian_ridge_regression(X, y, true_beta)
+    
+    @time_limited(time_limit)
+    def run_lasso(): return bayesian_lasso(X, y, true_beta)
+    
+    @time_limited(time_limit)
+    def run_robust(): return bayesian_robust_regression(X, y, true_beta)
+    
+    @time_limited(time_limit)
+    def run_vi(): return bayesian_regression_vi(X, y, true_beta)
+
+    # Run models with time limits
+    results = []
+    traces = []
+    transformers = []
+    
+    for name, runner in [
+        ('MCMC', run_mcmc),
+        ('Ridge', run_ridge),
+        ('Lasso', run_lasso),
+        ('Robust', run_robust),
+        ('VI', run_vi)
+    ]:
+        print(f"\nRunning {name}...")
+        result = runner()
+        if result is not None:
+            traces.append(result[1])
+            transformers.append(None)
+    
+    # Dimensionality reduction models
+    pca = PCA(n_components=min(n_components, p))
+    X_pca = pca.fit_transform(X)
+    
+    @time_limited(time_limit)
+    def run_pcr(): return bayesian_pcr(X_pca, y, true_beta, n_components)
+    
+    print("\nRunning PCR...")
+    pcr_result = run_pcr()
+    if pcr_result is not None:
+        traces.append(pcr_result[1])
+        transformers.append(pca)
+    
+    ica = FastICA(n_components=min(n_components, p), random_state=42)
+    X_ica = ica.fit_transform(X)
+    
+    @time_limited(time_limit)
+    def run_icr(): return bayesian_icr(X_ica, y, true_beta, n_components)
+    
+    print("\nRunning ICR...")
+    icr_result = run_icr()
+    if icr_result is not None:
+        traces.append(icr_result[1])
+        transformers.append(ica)
+
+    # Evaluate completed models
+    rmse_values = []
+    for trace, transformer in zip(traces, transformers):
+        try:
+            beta = trace.posterior['beta'].mean(dim=('chain', 'draw')).values
+            if transformer is not None:
+                beta = transformer.components_.T @ beta
+            rmse = evaluate_model_performance(beta, true_beta)
+            rmse_values.append(rmse)
+        except Exception as e:
+            print(f"Error evaluating model: {str(e)}")
+            rmse_values.append(None)
+    
+    # Pad with Nones for skipped models to maintain order
+    expected_models = 7  # Original number of models
+    while len(rmse_values) < expected_models:
+        rmse_values.append(None)
+    
+    return tuple(rmse_values)
+
+import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import traceback
+import sys
+
+def run_model_safely(model_func, args, kwargs):
+    """Wrapper to run model and capture output safely"""
+    old_stdout = sys.stdout
+    try:
+        # Redirect stdout temporarily to avoid rich/IPython recursion
+        sys.stdout = open('/dev/null', 'w') if sys.platform != 'win32' else open('nul', 'w')
+        result = model_func(*args, **kwargs)
+        return result
+    except Exception as e:
+        raise e
+    finally:
+        sys.stdout = old_stdout
+
+def run_and_plot_models(X, y, true_beta=None, n_components=2, time_limit=30):
+    """
+    Run Bayesian models with proper timeout functionality and plot results
+    
+    Args:
+        X: Input features
+        y: Target variable
+        true_beta: True coefficients (optional)
+        n_components: Number of components for PCR/ICR
+        time_limit: Maximum seconds allowed per model
+        
+    Returns:
+        Dictionary containing results and metrics
+    """
+    models = {
+        "Bayesian Linear Regression": bayesian_regression_mcmc,
+        "Bayesian Ridge Regression": bayesian_ridge_regression,
+        "Bayesian Lasso": bayesian_lasso,
+        "Bayesian Robust Regression": bayesian_robust_regression,
+        "Bayesian Variational Inference": bayesian_regression_vi,
+        "Bayesian PCR": bayesian_pcr,
+        "Bayesian ICR": bayesian_icr,
+    }
+    
+    evaluation_mode = true_beta is not None
+    num_betas = len(true_beta) if evaluation_mode else X.shape[1]
+    
+    results = []
+    model_traces = {}
+    model_metrics = {}
+    model_extras = {}
+    skipped_models = []
+    
+    if evaluation_mode:
+        active_models = [name for name in models if "PCR" not in name and "ICR" not in name]
+        fig, axes = plt.subplots(num_betas, len(active_models), 
+                               figsize=(18, 3 * num_betas),
+                               sharex=True, sharey=True)
+        axes = axes.reshape(num_betas, len(active_models))
+    
+    # Run models one at a time with timeout
+    for col, (model_name, model_func) in enumerate(models.items()):
+        print(f"\nRunning {model_name}...")
+        start_time = time.time()
+        
+        # Prepare arguments
+        if model_name in ["Bayesian PCR", "Bayesian ICR"]:
+            args = (X, y, true_beta, n_components) if evaluation_mode else (X, y)
+            kwargs = {'n_components': n_components} if not evaluation_mode else {}
+        else:
+            args = (X, y, true_beta) if evaluation_mode else (X, y)
+            kwargs = {}
+        
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_model_safely, model_func, args, kwargs)
+                result = future.result(timeout=time_limit)
+                
+                # Process successful result
+                if model_name in ["Bayesian PCR", "Bayesian ICR"]:
+                    model, trace, transformer = result
+                    model_extras[model_name] = transformer
+                else:
+                    model, trace = result
+                    transformer = None
+
+                rmse, beta_estimates = compute_metrics(trace, X, y, transformer)
+                
+                results.append([model_name] + list(beta_estimates) + [rmse])
+                model_traces[model_name] = trace
+                model_metrics[model_name] = rmse
+                
+                if evaluation_mode and model_name not in ["Bayesian PCR", "Bayesian ICR"]:
+                    try:
+                        beta_key = [key for key in trace.posterior.keys() if "beta" in key][0]
+                        for i in range(num_betas):
+                            az.plot_posterior(trace.posterior[beta_key].sel(beta_dim_0=i),
+                                             hdi_prob=0.95, ax=axes[i, col])
+                            axes[i, col].set_title(f"{model_name} - Beta[{i}]")
+                    except Exception as e:
+                        print(f"Could not plot {model_name}: {str(e)}")
+                        
+                print(f"Completed {model_name} in {time.time()-start_time:.2f}s")
+                
+        except TimeoutError:
+            print(f"Skipping {model_name} - exceeded time limit of {time_limit}s")
+            skipped_models.append(model_name)
+        except Exception as e:
+            print(f"Skipping {model_name} - encountered error:\n{traceback.format_exc()}")
+            skipped_models.append(model_name)
+    
+   
