@@ -10,9 +10,20 @@ from sklearn.decomposition import FastICA
 from scipy import stats
 from sklearn.linear_model import LassoCV
 from sklearn.model_selection import KFold
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import traceback
+import sys
 
+# Models
 
-# Bayesian Linear Regression Model
+## Bayesian Linear Regression Model
 def bayesian_regression_mcmc(X, y, true_beta  = None, draws  =4000):
     if draws < 4000:
         tune = draws
@@ -35,7 +46,7 @@ def bayesian_regression_mcmc(X, y, true_beta  = None, draws  =4000):
 
     return model, trace
 
-# Bayesian Ridge Regression Model
+## Bayesian Ridge Regression Model
 def bayesian_ridge_regression(X, y, true_beta  = None, draws = 4000):
     if draws < 4000:
         tune = draws
@@ -61,6 +72,8 @@ def bayesian_ridge_regression(X, y, true_beta  = None, draws = 4000):
         trace = pm.sample(draws = draws, tune = tune, return_inferencedata=True,
                           idata_kwargs={"log_likelihood": True})
     return model, trace
+
+## Bayesian Lasso Regression Model
 
 def bayesian_lasso(X, y, true_beta=None, n_folds=5, draws  =4000):
     """Bayesian Lasso regression with cross-validated lambda selection"""
@@ -96,7 +109,7 @@ def bayesian_lasso(X, y, true_beta=None, n_folds=5, draws  =4000):
     return model, trace
 
 
-# Bayesian Robust Regression Model
+## Bayesian Robust Regression Model
 def bayesian_robust_regression(X, y, true_beta  = None, draws =4000):
     if draws < 4000:
         tune = draws
@@ -117,6 +130,8 @@ def bayesian_robust_regression(X, y, true_beta  = None, draws =4000):
 
     return model, trace
 
+## Variational Inference
+
 def bayesian_regression_vi(X, y, true_beta = None):
     if true_beta is None:
         true_beta = np.zeros(X.shape[1])
@@ -127,6 +142,8 @@ def bayesian_regression_vi(X, y, true_beta = None):
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y)
         approx = pm.fit(n=10000, method="advi")  # Automatic Differentiation Variational Inference (ADVI)
     return model, approx.sample(1000)
+
+## Principal Component Regression
 
 def bayesian_pcr(X, y, true_beta=None, n_components=None, draws=  4000):
     if draws < 4000:
@@ -154,6 +171,7 @@ def bayesian_pcr(X, y, true_beta=None, n_components=None, draws=  4000):
 
     return model, trace, pca  # Return PCA object for inverse transformation
 
+## ICR
 
 def bayesian_icr(X, y, true_beta=None, n_components=None, draws = 4000):
     if draws < 4000:
@@ -185,114 +203,8 @@ def bayesian_icr(X, y, true_beta=None, n_components=None, draws = 4000):
     return model, trace, ica
 
 
-def compute_metrics(trace, X, y, transformer=None):
-    beta_key = [key for key in trace.posterior.keys() if "beta" in key][0]
-    beta_samples = trace.posterior[beta_key].mean(dim=["chain", "draw"]).values
-
-    if transformer is not None:  # Convert back to original feature space
-        beta_samples = transformer.components_.T @ beta_samples
-
-    y_pred = X @ beta_samples
-    mse = np.mean((y - y_pred) ** 2)
-    rmse = np.sqrt(mse)
-    
-    return rmse, beta_samples
 
 
-def evaluate_model_performance(estimated_beta, true_beta):
-    # Ensure both arrays have same length by padding estimated_beta with zeros if needed
-    if len(estimated_beta) < len(true_beta):
-        padded_estimated = np.zeros(len(true_beta))
-        padded_estimated[:len(estimated_beta)] = estimated_beta
-        estimated_beta = padded_estimated
-    return np.sqrt(np.mean((true_beta - estimated_beta) ** 2))  # RMSE
-
-
-
-"""def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr=False):
-    #
-    Main function to run all models and evaluate performance
-    
-    Args:
-        n (int): Number of samples
-        p (int): Number of predictors
-        true_beta (array): True coefficients (if None, will generate)
-        n_components (int): Number of components for PCR/ICR
-        high_corr (bool): Whether to generate high-correlation data
-        
-    Returns:
-        tuple: RMSE values for all models
-    #
-    if true_beta is None:
-        true_beta = np.logspace(0, 1, p, base=2)  # Generate true_beta based on p
-
-    p = len(true_beta)
-    sigma_true = 1
-
-    if not high_corr:
-        # Generate simple alternating pattern data
-        X = np.ones((n, p))
-        for i in range(0, X.shape[1], 2):
-            X[i::2, i] = 0
-            X[i+1::2, i] = 1
-        y = np.dot(X, true_beta) + stats.norm(0, sigma_true).rvs(n)
-    else:
-        X, y, true_beta = generate_high_dim_data(n=n, p=p)
-
-    # Run all models
-    _, trace_mcmc = bayesian_regression_mcmc(X, y, true_beta)
-    _, trace_ridge = bayesian_ridge_regression(X, y, true_beta)
-    _, trace_lasso = bayesian_lasso(X, y, true_beta)
-    _, trace_robust = bayesian_robust_regression(X, y, true_beta)
-    _, trace_vi = bayesian_regression_vi(X, y, true_beta)
-    
-    # Dimensionality reduction models
-    pca = PCA(n_components=min(n_components, p))
-    X_pca = pca.fit_transform(X)
-    _, trace_pcr, _ = bayesian_pcr(X_pca, y, true_beta, n_components)
-    
-    ica = FastICA(n_components=min(n_components, p), random_state=42)
-    X_ica = ica.fit_transform(X)
-    _, trace_icr, _ = bayesian_icr(X_ica, y, true_beta, n_components)
-
-    # Extract and evaluate all results
-    rmse_values = []
-    for trace, transformer in zip(
-        [trace_mcmc, trace_ridge, trace_lasso, trace_robust, trace_vi, trace_pcr, trace_icr],
-        [None, None, None, None, None, pca, ica]
-    ):
-        beta = trace.posterior['beta'].mean(dim=('chain', 'draw')).values
-        if transformer is not None:
-            beta = transformer.components_.T @ beta
-        rmse_values.append(evaluate_model_performance(beta, true_beta))
-    
-    return tuple(rmse_values)
-
-"""
-
-def generate_high_dim_data(n=50, p=100, true_signal_indices=None, true_beta_values=[3.0, -2.0, 4.0], noise_level=1.0):
-    """Generate high-dimensional data with sparse true signals."""
-    if true_signal_indices is None:
-        # Dynamically place signals at 25%, 50%, 75% of p (but ensure they're within bounds)
-        true_signal_indices = [int(p * 0.25), int(p * 0.5), int(p * 0.75)]
-        true_signal_indices = [min(idx, p-1) for idx in true_signal_indices]  # Ensure no out-of-bounds
-    
-    true_beta = np.zeros(p)
-    true_beta[true_signal_indices] = true_beta_values  # Only a few true signals
-
-    # Generate X with a few latent factors + noise
-    latent_dim = len(true_signal_indices)
-    latent_factors = np.random.randn(n, latent_dim)  # Latent factors driving y
-    X = np.hstack([
-        latent_factors[:, 0:1] * np.random.randn(n, p // 3),  # Group 1: Correlated with factor 1
-        latent_factors[:, 1:2] * np.random.randn(n, p // 3),  # Group 2: Correlated with factor 2
-        latent_factors[:, 2:3] * np.random.randn(n, p // 3),  # Group 3: Correlated with factor 3
-        np.random.randn(n, p - 3 * (p // 3))  # Pure noise
-    ])
-
-    # y depends only on the latent factors
-    y = np.dot(latent_factors, true_beta_values) + stats.norm(0, noise_level).rvs(n)
-    return X, y, true_beta
 
 import time
 from functools import wraps
@@ -432,44 +344,17 @@ def run_models_and_evaluate(n=20, p=3, true_beta=None, n_components=2, high_corr
     
     return tuple(rmse_values)
 
-import time
-import warnings
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-import traceback
-import sys
 
 
-def run_model_safely(model_func, args, kwargs):
-    """Wrapper to run model and capture output safely"""
-    old_stdout = sys.stdout
-    try:
-        # Redirect stdout temporarily to avoid rich/IPython recursion
-        sys.stdout = open('/dev/null', 'w') if sys.platform != 'win32' else open('nul', 'w')
-        result = model_func(*args, **kwargs)
-        return result
-    except Exception as e:
-        raise e
-    finally:
-        sys.stdout = old_stdout
-
-# Generate test data
-np.random.seed(410)
-n = 50
-p = 5
-X = np.ones((n, p))
-for i in range(0, X.shape[1], 2):
-    X[i::2, i] = 0
-    X[i+1::2, i] = 1
-
-true_beta = np.logspace(0, 1, p, base=2)
-sigma_true = 1
-y = np.dot(X, true_beta) + stats.norm(0, sigma_true).rvs(n)
 
 
+# Apply to datasets
 
 
 def run_model_tests(X, y, true_beta=None, n_components=2, max_test_time=5):
-    """Run timing tests and return passing models"""
+    """Run timing tests and return passing models
+    Create test-chains to see if it is feasible to run full 5000 draw posterior chains or if we should skip that model. 
+    This is done with a chain with just 30 draws and checking if it takes more than 5 seconds to sample from it """
     all_models = {
         "Bayesian Linear Regression": bayesian_regression_mcmc,
         "Bayesian Ridge Regression": bayesian_ridge_regression,
@@ -490,13 +375,13 @@ def run_model_tests(X, y, true_beta=None, n_components=2, max_test_time=5):
         # Prepare arguments
         if model_name in ["Bayesian PCR", "Bayesian ICR"]:
             args = (X, y, true_beta, n_components) if true_beta is not None else (X, y)
-            kwargs = {'n_components': n_components, 'draws': 25} if true_beta is None else {'draws': 25}
+            kwargs = {'n_components': n_components, 'draws': 15} if true_beta is None else {'draws': 15}
         elif model_name == "Bayesian Variational Inference":
             args = (X, y, true_beta) if true_beta is not None else (X, y)
             kwargs = {}
         else:
             args = (X, y, true_beta) if true_beta is not None else (X, y)
-            kwargs = {'draws': 25}
+            kwargs = {'draws': 15}
         
         try:
             start_time = time.time()
@@ -527,7 +412,7 @@ def run_and_plot_models(X, y, true_beta=None, n_components=2, max_test_time=5):
     Complete workflow:
     1. Run timing tests to filter models
     2. Run full analysis on passing models
-    3. Return comprehensive results
+    3. Return results (RMSE and beta estimates)
     """
     # Step 1: Get passing models
     passing_models = run_model_tests(X, y, true_beta, n_components, max_test_time)
@@ -602,5 +487,155 @@ def run_and_plot_models(X, y, true_beta=None, n_components=2, max_test_time=5):
         'transformers': transformers
     }
 
-# Example usage:
-#results = run_and_plot_models(X, y, true_beta=true_beta, n_components=2)
+
+
+# Create datasets
+
+
+def generate_high_dim_data(n=50, p=100, true_signal_indices=None, true_beta_values=[3.0, -2.0, 4.0], noise_level=1.0):
+    """Generate high-dimensional data with sparse true signals."""
+    if true_signal_indices is None:
+        # Dynamically place signals at 25%, 50%, 75% of p (but ensure they're within bounds)
+        true_signal_indices = [int(p * 0.25), int(p * 0.5), int(p * 0.75)]
+        true_signal_indices = [min(idx, p-1) for idx in true_signal_indices]  # Ensure no out-of-bounds
+    
+    true_beta = np.zeros(p)
+    true_beta[true_signal_indices] = true_beta_values  # Only a few true signals
+
+    # Generate X with a few latent factors + noise
+    latent_dim = len(true_signal_indices)
+    latent_factors = np.random.randn(n, latent_dim)  # Latent factors driving y
+    X = np.hstack([
+        latent_factors[:, 0:1] * np.random.randn(n, p // 3),  # Group 1: Correlated with factor 1
+        latent_factors[:, 1:2] * np.random.randn(n, p // 3),  # Group 2: Correlated with factor 2
+        latent_factors[:, 2:3] * np.random.randn(n, p // 3),  # Group 3: Correlated with factor 3
+        np.random.randn(n, p - 3 * (p // 3))  # Pure noise
+    ])
+
+    # y depends only on the latent factors
+    y = np.dot(latent_factors, true_beta_values) + stats.norm(0, noise_level).rvs(n)
+    return X, y, true_beta
+
+# Helper Functions
+
+def compute_metrics(trace, X, y, transformer=None):
+    beta_key = [key for key in trace.posterior.keys() if "beta" in key][0]
+    beta_samples = trace.posterior[beta_key].mean(dim=["chain", "draw"]).values
+
+    if transformer is not None:  # Convert back to original feature space
+        beta_samples = transformer.components_.T @ beta_samples
+
+    y_pred = X @ beta_samples
+    mse = np.mean((y - y_pred) ** 2)
+    rmse = np.sqrt(mse)
+    
+    return rmse, beta_samples
+
+
+def evaluate_model_performance(estimated_beta, true_beta):
+    # Ensure both arrays have same length by padding estimated_beta with zeros if needed
+    if len(estimated_beta) < len(true_beta):
+        padded_estimated = np.zeros(len(true_beta))
+        padded_estimated[:len(estimated_beta)] = estimated_beta
+        estimated_beta = padded_estimated
+    return np.sqrt(np.mean((true_beta - estimated_beta) ** 2))  # RMSE
+
+
+# Data preprocessing pipeline with feature selection
+
+
+def preprocess_data(df, response, top_n_features=None):
+    """
+    Robust data preprocessing pipeline that handles mixed data types
+    
+    Args:
+        df: Input DataFrame
+        response: Name of target variable column
+        top_n_features: Number of top features to select (None keeps all)
+        
+    Returns:
+        Tuple of (processed_features, target)
+    """
+    # Separate features and target
+    y = df[response]
+    X = df.drop(columns=[response])
+    
+    if top_n_features is None:
+        top_n_features = len(X.columns)
+    
+    # First pass: convert all data to strings to handle mixed types
+    X_str = X.astype(str)
+    
+    # Second pass: identify truly numeric columns
+    numeric_cols = []
+    categorical_cols = []
+    
+    for col in X_str.columns:
+        # Try converting to numeric
+        numeric_vals = pd.to_numeric(X_str[col], errors='coerce')
+        if numeric_vals.notna().all():  # All values converted successfully
+            numeric_cols.append(col)
+            X_str[col] = numeric_vals  # Store as numeric
+        else:
+            categorical_cols.append(col)
+    
+    # Create preprocessing pipelines
+    numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
+    ])
+    
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='most_frequent', fill_value='missing')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
+    
+    # Combine preprocessing steps
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, numeric_cols),
+            ('cat', categorical_transformer, categorical_cols)
+        ])
+    
+    # Apply preprocessing
+    try:
+        X_processed = preprocessor.fit_transform(X_str)
+    except Exception as e:
+        print(f"Error during preprocessing: {str(e)}")
+        # Fallback: convert all to categorical if mixed types persist
+        categorical_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='most_frequent', fill_value='missing')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ])
+        preprocessor = ColumnTransformer(
+            transformers=[('cat', categorical_transformer, X_str.columns)])
+        X_processed = preprocessor.fit_transform(X_str)
+    
+    # Get feature names
+    if len(categorical_cols) > 0:
+        cat_encoder = preprocessor.named_transformers_['cat'].named_steps['onehot']
+        categorical_features = cat_encoder.get_feature_names_out(categorical_cols)
+        all_features = numeric_cols + list(categorical_features)
+    else:
+        all_features = numeric_cols
+    
+    # Convert to DataFrame
+    X_df = pd.DataFrame(X_processed, columns=all_features)
+    
+    # Select top N features by variance
+    if len(all_features) > top_n_features:
+        selector = VarianceThreshold()
+        selector.fit(X_df)
+        variances = selector.variances_
+        
+        top_indices = np.argsort(variances)[-top_n_features:]
+        selected_features = [all_features[i] for i in top_indices]
+        
+        print(f"\nSelected top {top_n_features} features from {len(all_features)} total features")
+        print("Top 10 features by variance:")
+        for feat in selected_features[:10]:
+            print(f"- {feat}")
+        
+        return X_df[selected_features], y
+    else:
+        return X_df, y
